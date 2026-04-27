@@ -1,0 +1,171 @@
+---
+title: "Astronaut database"
+author: 
+  - "Federico Di Franco"
+  - "Henry Michel Iannella Jones"
+  - "Francesco Pierri"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Set chunk options
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+# Load required libraries
+library(tidyverse)
+library(janitor)
+library(knitr)
+```
+
+## 1. Data Loading
+
+We begin by loading the data from the TidyTuesday repository. Using the direct URL ensures that the code is reproducible without relying on local files.
+
+```{r load-data}
+# Read in the data manually
+url <- "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2020/2020-07-14/astronauts.csv"
+astronauts_raw <- read_csv(url)
+
+# Clean column names for easier typing and consistency
+astronauts <- astronauts_raw %>% 
+  clean_names()
+
+# Check initial number of rows
+nrow(astronauts)
+
+# Display the first few rows to understand the data
+head(astronauts)
+```
+
+## 2. Examining Data Structure
+Next, we examine the dataset to understand its structure, dimensions, and the types of variables it contains. We use `str()` as recommended to avoid structure-related mistakes.
+
+```{r check-structure}
+# Check the structure and data types
+str(astronauts)
+
+# Show basic summary statistics
+summary(astronauts)
+```
+
+Now, we will check for potential typos in categorical variables. This is important because typos can lead to incorrect groupings and analyses later on. We will look at the unique values in key categorical columns to identify any inconsistencies.
+
+```{r check-categorical}
+# Explore specific categorical columns for typos (e.g., 'pilot' vs 'Pilot')
+# We sort alphabetically to make case-sensitivity issues stand out
+typo_cols <- c("sex", "nationality", "military_civilian", "occupation")
+for (col in typo_cols) {
+  cat("\n--- Column:", col, "---\n")
+  astronauts %>% 
+    count(.data[[col]]) %>% 
+    arrange(.data[[col]]) %>% 
+    print(n = Inf) # Print all values to ensure no typo is missed
+}
+```
+
+As we can see from the output above, there are some data entry inconsistencies. For example, in the `occupation` column we have both `"Pilot"` and `"pilot"`, or `"Space tourist"` and `"space tourist"`. We will address these case-sensitivity issues automatically in the cleaning phase.
+
+## 3. Handling Missing Values and Inconsistencies
+Before doing calculations, it is crucial to check for missing values and fix categorical 
+inconsistencies. 
+
+```{r check-missing}
+# Count missing values per column
+colSums(is.na(astronauts))
+
+# Isolate rows that contain at least one missing value (NA) in any column
+rows_with_na <- astronauts %>% 
+  filter(if_any(everything(), is.na))
+cat("\nTotal rows with at least one missing value:", nrow(rows_with_na), "\n")
+```
+We will inspect the rows with missing values to understand the nature of the missing data. This helps us decide how to handle them appropriately (e.g., whether to impute, drop, or categorize as "Unknown").
+
+```{r inspect-missing}
+# Display the first few of these rows to visually inspect the missing data
+head(rows_with_na)
+```
+
+We will remove rows that are completely empty (if any). We make sure to check the number of rows before and after filtering to ensure we don't drop data unintentionally, even though we know there will be no NA numbers from the previous check, this makes our code robust for future additions as well.
+
+```{r clean-data}
+# Check rows before filtering
+n_rows_before <- nrow(astronauts)
+astronauts_clean <- astronauts %>% 
+  # Remove rows where the key identifier 'number' is NA
+  filter(!is.na(number)) 
+
+# Check rows after filtering to ensure we didn't drop too much
+n_rows_after <- nrow(astronauts_clean)
+cat("Rows removed:", n_rows_before - n_rows_after, "\n")
+```
+Next, we will normalize all character columns to lowercase to automatically fix case typos (e.g., 'Pilot' -> 'pilot'). This is much safer and scalable than fixing typos manually one by one. We will also handle missing observations appropriately by replacing NA values in character columns with "Unknown". This way, we keep the numerical data of those astronauts intact while still acknowledging the missing information.
+```{r fix-inconsistencies}
+# Normalize all character columns to lowercase to automatically fix case typos (e.g., 'Pilot' -> 'pilot')
+# This is much safer and scalable than fixing typos manually one by one.
+astronauts_clean <- astronauts_clean %>%
+  mutate(
+    across(where(is.character), str_to_lower)
+  )
+
+# Handle missing observations appropriately
+# Documenting our choice: We use "Unknown" for missing text data instead of dropping rows, 
+# to keep numerical data of those astronauts intact.
+astronauts_clean <- astronauts_clean %>%
+  mutate(
+    across(where(is.character), ~replace_na(.x, "Unknown"))
+  )
+
+# Verify that missing values have been handled
+colSums(is.na(astronauts_clean))
+```
+
+In the end, we will verify that all typos have been fixed and that there are no unexpected missing values left in the cleaned dataset.
+
+```{r verify-cleaning}
+# Verify that all typos have been fixed by checking unique values again
+for (col in typo_cols) {
+  cat("\n--- Column:", col, "---\n")
+  astronauts_clean %>%
+    count(.data[[col]]) %>% 
+    arrange(.data[[col]]) %>% 
+    print(n = Inf) # Print all values to ensure no typo is missed
+}
+```
+
+Now we can see that while the case-sensitivity issues have been resolved, there is still an inconsistency in the `occupation` column: some values contain the redundant prefix `"other (...)"` (e.g., `"other (journalist)"` and `"other (space tourist)"`). 
+
+We want to extract just the specific role from inside the parentheses. We can do this cleanly using regular expressions with `str_replace()`:
+
+```{r fix-occupation}
+# Use regular expressions to extract the text inside 'other (...)'
+astronauts_clean <- astronauts_clean %>%
+  mutate(
+    occupation = str_replace(occupation, "other \\((.*?)\\)", "\\1")
+  )
+
+# Verify the final cleaned occupation column
+cat("\n--- Final 'occupation' column ---\n")
+astronauts_clean %>%
+  count(occupation) %>%
+  arrange(occupation) %>%
+  print(n = Inf)
+```
+
+## 4. Data Transformation
+Finally, we transform the data types to make the dataset suitable for analysis, such as converting characters to factors where appropriate. This will help with any categorical analyses we want to perform later on.
+
+```{r transform-data}
+# Convert relevant character columns to factors
+astronauts_clean <- astronauts_clean %>%
+  mutate(
+    sex = as.factor(sex),
+    military_civilian = as.factor(military_civilian),
+    nationality = as.factor(nationality),
+    occupation = as.factor(occupation)
+  )
+
+# Verify the final structure
+str(astronauts_clean)
+```
+
+The dataset `astronauts_clean` is now prepared and can be used for the next step: Exploratory Data Analysis.

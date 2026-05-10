@@ -169,3 +169,350 @@ str(astronauts_clean)
 ```
 
 The dataset `astronauts_clean` is now prepared and can be used for the next step: Exploratory Data Analysis.
+
+# Exploratory Data Analysis
+
+## 1. Description of Variables and Descriptive Statistics
+The `astronauts_clean` dataset contains details about astronauts, their missions, and the time spent in space and on spacewalks (EVAs). We first calculate basic descriptive statistics for some key numerical variables.
+
+```{r eda-summary}
+# Summary of numerical features
+astronauts_clean %>%
+  summarise(
+    n_obs = n(),
+    mean_hours = mean(total_hrs_sum, na.rm = TRUE),
+    median_hours = median(total_hrs_sum, na.rm = TRUE),
+    sd_hours = sd(total_hrs_sum, na.rm = TRUE),
+    max_hours = max(total_hrs_sum, na.rm = TRUE),
+    mean_eva = mean(total_eva_hrs, na.rm = TRUE),
+    max_eva = max(total_eva_hrs, na.rm = TRUE)
+  )
+```
+
+```{r missing-check-eda}
+# Missing values check specifically before the next transformations
+astronauts_clean %>%
+  summarise(across(everything(), ~ sum(is.na(.x)), .names = "na_{.col}"))
+```
+
+## 2. Creation of New Variables
+As required, we will create at least 10 new columns (exactly 12) to enrich the dataset with meaningful calculated indicators, aggregated categories, and recoded variables. 
+
+```{r new-variables}
+astronauts_eda <- astronauts_clean %>%
+  mutate(
+    # 1. age_at_selection: age when selected
+    age_at_selection = year_of_selection - year_of_birth,
+    
+    # 2. age_at_mission: age during the mission
+    age_at_mission = year_of_mission - year_of_birth,
+    
+    # 3. decade_of_mission: grouping missions by decade
+    decade_of_mission = as.factor(floor(year_of_mission / 10) * 10),
+    
+    # 4. career_duration: time between selection and mission
+    career_duration = year_of_mission - year_of_selection,
+    
+    # 5. mission_duration_days: mission time in days
+    mission_duration_days = hours_mission / 24,
+    
+    # 6. total_days_in_space: cumulative mission time in days
+    total_days_in_space = total_hrs_sum / 24,
+    
+    # 7. is_us_or_ussr: superpower origin vs others 
+    is_us_or_ussr = as.factor(if_else(str_detect(nationality, "u\\.s\\.|u\\.s\\.s\\.r"), "Superpower", "Other")),
+    # Documenting our choice: We use str_detect() instead of exact matching (%in%) 
+    # to correctly capture dual nationalities or mixed missions that contain a slash, 
+    # such as "u.k./u.s." and "u.s.s.r/ukraine". This ensures no superpower is missed.
+    
+    # 8. has_eva: binary variable indicating if the mission had a spacewalk
+    has_eva = as.factor(if_else(eva_hrs_mission > 0, "Yes", "No")),
+    
+    # 9. experience_level: distinguishing rookies from veterans
+    experience_level = as.factor(case_when(
+      mission_number == 1 ~ "Rookie", 
+      TRUE ~ "Veteran"
+    )),
+    
+    # 10. eva_percentage: percent of mission time spent on EVA (handling div by 0 just in case)
+    eva_percentage = if_else(hours_mission > 0, (eva_hrs_mission / hours_mission) * 100, 0),
+    
+    # 11. mission_era: Historical era of spaceflight
+    mission_era = factor(case_when(
+      year_of_mission < 1975 ~ "Space Race",
+      year_of_mission <= 2000 ~ "Shuttle & Mir",
+      TRUE ~ "ISS Era"
+    ), levels = c("Space Race", "Shuttle & Mir", "ISS Era")),
+    
+    # 12. eva_intensity_hrs_per_day: EVA hours normalized by mission duration
+    eva_intensity_hrs_per_day = if_else(mission_duration_days > 0, eva_hrs_mission / mission_duration_days, 0)
+  )
+
+# Verification of the structure of the new dataset
+glimpse(astronauts_eda)
+```
+
+## 3. Data Visualizations
+Here are 12 meaningful charts to highlight the most important aspects of the data.
+
+```{r custom-theme}
+# --- Aesthetic Configuration ---
+# Toggle this to 'TRUE' for the Dark Mode, or 'FALSE' for the Light Mode
+use_dark_mode <- FALSE
+
+if (use_dark_mode) {
+  custom_theme <- theme_minimal(base_size = 14) +
+    theme(
+      plot.background = element_rect(fill = "#1a1a2e", color = NA),
+      panel.background = element_rect(fill = "#1a1a2e", color = NA),
+      text = element_text(color = "white"),
+      axis.text = element_text(color = "gray80"),
+      plot.title = element_text(face = "bold", size = 16, color = "white"),
+      plot.subtitle = element_text(face = "italic", color = "gray60", size = 12),
+      panel.grid.major = element_line(color = "gray30", linewidth = 0.5),
+      panel.grid.minor = element_blank(),
+      legend.background = element_rect(fill = "#1a1a2e", color = NA),
+      legend.text = element_text(color = "white"),
+      legend.title = element_text(color = "white", face = "bold"),
+      legend.position = "top"
+    )
+  geom_color <- "#00b4d8"
+} else {
+  custom_theme <- theme_minimal(base_size = 14) +
+    theme(
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      text = element_text(color = "black"),
+      axis.text = element_text(color = "black"),
+      plot.title = element_text(face = "bold", size = 16, color = "black"),
+      plot.subtitle = element_text(face = "italic", color = "gray40", size = 12),
+      panel.grid.major = element_line(color = "gray90", linewidth = 0.5),
+      panel.grid.minor = element_blank(),
+      legend.background = element_rect(fill = "white", color = NA),
+      legend.text = element_text(color = "black"),
+      legend.title = element_text(color = "black", face = "bold"),
+      legend.position = "top"
+    )
+  geom_color <- "#03045e"
+}
+
+# Apply the theme globally so we don't have to repeat it in every chart
+theme_set(custom_theme)
+```
+
+### Chart 1: Age Distribution During Missions
+```{r chart-1-age}
+# Why: To see the typical age of astronauts going to space.
+# What: A histogram of age at mission.
+# How it helps: Gives an idea of the physical requirements and career path timeline.
+astronauts_eda %>%
+  ggplot(aes(x = age_at_mission)) +
+  geom_histogram(binwidth = 2, fill = geom_color, color = "white", alpha = 0.8) +
+  labs(
+    title = "Distribution of Age at Mission",
+    subtitle = "Age of astronauts at the time of their launch",
+    x = "Age",
+    y = "Count"
+  )
+```
+
+### Chart 2: Top 10 Nationalities
+```{r chart-2-nationality}
+# Why: To understand the geographic distribution of astronauts.
+# What: A bar chart counting missions by the top 10 nationalities.
+# How it helps: It highlights the historical dominance of specific countries in space exploration.
+astronauts_eda %>%
+  count(nationality, sort = TRUE) %>%
+  slice_head(n = 10) %>%
+  ggplot(aes(x = reorder(nationality, n), y = n, fill = nationality)) +
+  geom_col(show.legend = FALSE, alpha = 0.9) +
+  scale_fill_viridis_d(option = "viridis") +
+  coord_flip() +
+  labs(
+    title = "Top 10 Nationalities by Number of Missions",
+    subtitle = "Historically dominant space agencies clearly visible",
+    x = "Nationality",
+    y = "Number of Missions"
+  )
+```
+
+### Chart 3: Mission Duration by Sex
+```{r chart-3-sex-duration}
+# Why: To check for gender disparities in mission assignments.
+# What: A combination of a violin plot and jittered points for mission length.
+# How it helps: Unlike a boxplot, this shows both the overall density shape and the exact concentration of individual missions (from short Shuttle flights to long ISS stays).
+astronauts_eda %>%
+  ggplot(aes(x = sex, y = mission_duration_days, fill = sex, color = sex)) +
+  geom_violin(alpha = 0.4, trim = FALSE) +
+  geom_jitter(width = 0.15, alpha = 0.5, size = 1.5) +
+  scale_fill_viridis_d(option = "plasma", end = 0.8) +
+  scale_color_viridis_d(option = "plasma", end = 0.8) +
+  labs(
+    title = "Mission Duration (Days) by Sex",
+    subtitle = "Showing both density distribution and individual data points",
+    x = "Sex",
+    y = "Duration (Days)"
+  ) +
+  theme(legend.position = "none")
+```
+
+### Chart 4: Total Space Hours over Time
+```{r chart-4-trend-hours}
+# Why: To see if missions are getting longer historically.
+# What: A scatter plot of total hours vs mission year.
+# How it helps: Highlights the evolution from short early flights to long-term ISS stays.
+astronauts_eda %>%
+  ggplot(aes(x = year_of_mission, y = total_hrs_sum, color = sex)) +
+  geom_point(alpha = 0.7, size = 2) +
+  scale_color_viridis_d(option = "plasma", end = 0.8) +
+  labs(
+    title = "Total Space Hours vs. Year of Mission",
+    subtitle = "Evolution from short flights to long-duration ISS stays",
+    x = "Year of Mission",
+    y = "Total Hours in Space",
+    color = "Sex"
+  )
+```
+
+### Chart 5: Missions per Year
+```{r chart-5-missions-year}
+# Why: To observe the pace of space exploration.
+# What: A line plot showing the count of missions each year.
+# How it helps: Shows peaks during the space race and shuttle eras.
+astronauts_eda %>%
+  count(year_of_mission) %>%
+  ggplot(aes(x = year_of_mission, y = n)) +
+  geom_line(color = geom_color, linewidth = 1.2, alpha = 0.8) +
+  geom_point(color = geom_color, size = 2.5) +
+  labs(
+    title = "Number of Astronaut Missions per Year",
+    subtitle = "Peaks indicate major programs like Apollo and Space Shuttle",
+    x = "Year",
+    y = "Count of Missions"
+  )
+```
+
+### Chart 6: Experience Level of Astronauts
+```{r chart-6-experience}
+# Why: To check the ratio of rookies vs veterans sent to space.
+# What: A bar chart of the experience level.
+# How it helps: We can understand if space agencies rely more on fresh faces or experienced crews.
+astronauts_eda %>%
+  count(experience_level) %>%
+  ggplot(aes(x = experience_level, y = n, fill = experience_level)) +
+  geom_col(show.legend = FALSE, alpha = 0.9) +
+  scale_fill_viridis_d(option = "mako", begin = 0.3, end = 0.8) +
+  labs(
+    title = "Number of Missions by Astronaut Experience Level",
+    subtitle = "Proportion of rookies vs returning veterans",
+    x = "Experience Level",
+    y = "Count"
+  )
+```
+
+### Chart 7: Age at Selection: Military vs Civilian
+```{r chart-7-selection-age}
+# Why: To test hypotheses about career paths.
+# What: A boxplot of age at selection grouped by military/civilian status.
+# How it helps: Reveals whether military pilots are selected younger than civilians.
+astronauts_eda %>%
+  filter(!is.na(age_at_selection)) %>%
+  ggplot(aes(x = military_civilian, y = age_at_selection, fill = military_civilian)) +
+  geom_boxplot(show.legend = FALSE, alpha = 0.8) +
+  scale_fill_viridis_d(option = "cividis", begin = 0.4, end = 0.9) +
+  labs(
+    title = "Age at Selection: Military vs Civilian",
+    subtitle = "Military personnel tend to be selected at slightly younger ages",
+    x = "Background",
+    y = "Age at Selection"
+  )
+```
+
+### Chart 8: Career Duration vs Total Days in Space
+```{r chart-8-career-duration}
+# Why: To see if longer careers mean more time in space.
+# What: Scatter plot comparing wait time (career duration) to total space time.
+# How it helps: Identifies astronauts who waited a long time but flew short missions, vs highly utilized ones.
+astronauts_eda %>%
+  filter(career_duration >= 0) %>%
+  ggplot(aes(x = career_duration, y = total_days_in_space)) +
+  geom_point(alpha = 0.6, color = geom_color, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "darkred", linetype = "dashed") +
+  labs(
+    title = "Total Days in Space vs Career Duration before Mission",
+    subtitle = "Checking if a longer wait leads to more time in space",
+    x = "Years from Selection to Mission",
+    y = "Total Days in Space"
+  )
+```
+
+### Chart 9: Top Occupations
+```{r chart-9-occupations}
+# Why: To see what roles are most needed in space.
+# What: Bar chart of the most frequent astronaut occupations.
+# How it helps: Shows the shift from pilots to mission specialists and commanders.
+astronauts_eda %>%
+  count(occupation, sort = TRUE) %>%
+  slice_head(n = 8) %>%
+  ggplot(aes(x = reorder(occupation, n), y = n, fill = occupation)) +
+  geom_col(show.legend = FALSE, alpha = 0.9) +
+  scale_fill_viridis_d(option = "rocket") +
+  coord_flip() +
+  labs(
+    title = "Top 8 Astronaut Occupations",
+    subtitle = "Most frequent roles assigned during missions",
+    x = "Occupation",
+    y = "Count"
+  )
+```
+
+### Chart 10: EVA Hours by Decade
+```{r chart-10-eva-decade}
+# Why: To examine the historical trend of spacewalking.
+# What: Boxplot of EVA hours per mission, grouped by decade.
+# How it helps: Illustrates how EVA (spacewalks) became more prominent in later decades (e.g., ISS construction).
+astronauts_eda %>%
+  ggplot(aes(x = decade_of_mission, y = eva_hrs_mission, fill = decade_of_mission)) +
+  geom_boxplot(show.legend = FALSE, alpha = 0.8) +
+  scale_fill_viridis_d(option = "turbo") +
+  labs(
+    title = "Distribution of Mission EVA Hours by Decade",
+    subtitle = "Historical increase in spacewalk duration and frequency",
+    x = "Decade of Mission",
+    y = "EVA Hours"
+  )
+```
+
+### Chart 11: Astronaut Age by Space Era
+```{r chart-11-age-by-era}
+# Why: To see if modern astronauts are older on average than early space pioneers.
+# What: A boxplot comparing age at mission across the three historical eras.
+# How it helps: Shows the demographic shift from young test pilots to older scientists/specialists.
+astronauts_eda %>%
+  ggplot(aes(x = mission_era, y = age_at_mission, fill = mission_era)) +
+  geom_boxplot(show.legend = FALSE, alpha = 0.8) +
+  scale_fill_viridis_d(option = "viridis") +
+  labs(
+    title = "Astronaut Age by Space Era",
+    subtitle = "Modern ISS crews tend to be older than Space Race pioneers",
+    x = "Space Era",
+    y = "Age at Mission"
+  )
+```
+
+### Chart 12: EVA Intensity Distribution
+```{r chart-12-eva-intensity}
+# Why: To understand the workload of spacewalks relative to mission length.
+# What: A density plot of EVA hours per day of mission.
+# How it helps: Identifies the typical concentration of extravehicular work during a flight.
+astronauts_eda %>%
+  filter(eva_intensity_hrs_per_day > 0) %>% # Focus only on missions with EVAs
+  ggplot(aes(x = eva_intensity_hrs_per_day)) +
+  geom_density(fill = geom_color, alpha = 0.7, color = "white") +
+  labs(
+    title = "Distribution of EVA Intensity",
+    subtitle = "Average hours spent on spacewalks per day of mission",
+    x = "EVA Hours per Day",
+    y = "Density"
+  )
+```

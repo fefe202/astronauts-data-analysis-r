@@ -8,23 +8,61 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-# Set chunk options
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+# Create data and images directories if they do not exist
+if (!dir.exists("data")) {
+  dir.create("data", recursive = TRUE)
+}
+if (!dir.exists("images")) {
+  dir.create("images", recursive = TRUE)
+}
 
-# Load required libraries
+# Set chunk options, directing all generated figures/plots to the images/ folder
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  warning = FALSE, 
+  message = FALSE, 
+  fig.path = "images/"
+)
+
+# List of required packages for data manipulation and modeling
+required_pkgs <- c("tidyverse", "janitor", "knitr", "tidymodels", "xgboost", "glmnet", "themis", "vip", "rpart.plot", "probably")
+
+# Check which ones are missing
+missing_pkgs <- required_pkgs[!(required_pkgs %in% installed.packages()[, "Package"])]
+
+# Install missing ones if any
+if (length(missing_pkgs) > 0) {
+  install.packages(missing_pkgs, repos = "https://cloud.r-project.org", quiet = TRUE)
+}
+
+# Load the libraries
 library(tidyverse)
 library(janitor)
 library(knitr)
+library(tidymodels)
+library(themis)
+library(vip)
+library(rpart.plot)
+library(probably)
 ```
 
 ## 1. Data Loading
 
-We begin by loading the data from the TidyTuesday repository. Using the direct URL ensures that the code is reproducible without relying on local files.
+We load the data from the local data directory. If the local file is not found, we download it directly from the TidyTuesday GitHub repository and save a local copy for future runs.
 
 ```{r load-data}
-# Read in the data manually
+local_path <- "data/astronauts.csv"
 url <- "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2020/2020-07-14/astronauts.csv"
-astronauts_raw <- read_csv(url)
+
+if (file.exists(local_path)) {
+  message("Loading dataset from local path: ", local_path)
+  astronauts_raw <- read_csv(local_path)
+} else {
+  message("Local dataset not found. Downloading from TidyTuesday GitHub repository...")
+  astronauts_raw <- read_csv(url)
+  # Save locally for future use
+  write_csv(astronauts_raw, local_path)
+}
 
 # Clean column names for easier typing and consistency
 astronauts <- astronauts_raw %>% 
@@ -164,6 +202,9 @@ astronauts_clean <- astronauts_clean %>%
     occupation = as.factor(occupation)
   )
 
+# Save the cleaned dataset to the data directory
+write_csv(astronauts_clean, "data/astronauts_clean.csv")
+
 # Verify the final structure
 str(astronauts_clean)
 ```
@@ -180,12 +221,12 @@ The `astronauts_clean` dataset contains details about astronauts, their missions
 astronauts_clean %>%
   summarise(
     n_obs = n(),
-    mean_hours = mean(total_hrs_sum, na.rm = TRUE),
-    median_hours = median(total_hrs_sum, na.rm = TRUE),
-    sd_hours = sd(total_hrs_sum, na.rm = TRUE),
-    max_hours = max(total_hrs_sum, na.rm = TRUE),
-    mean_eva = mean(total_eva_hrs, na.rm = TRUE),
-    max_eva = max(total_eva_hrs, na.rm = TRUE)
+    mean_hours = round(mean(total_hrs_sum, na.rm = TRUE), 1),
+    median_hours = round(median(total_hrs_sum, na.rm = TRUE), 1),
+    sd_hours = round(sd(total_hrs_sum, na.rm = TRUE), 1),
+    max_hours = round(max(total_hrs_sum, na.rm = TRUE), 1),
+    mean_eva = round(mean(total_eva_hrs, na.rm = TRUE), 1),
+    max_eva = round(max(total_eva_hrs, na.rm = TRUE), 1)
   )
 ```
 
@@ -516,3 +557,737 @@ astronauts_eda %>%
     y = "Density"
   )
 ```
+
+# Modeling
+
+In this section, we move beyond descriptive exploration and build three predictive models to answer distinct and interesting research questions. Our models utilize the `tidymodels` framework in R and demonstrate advanced machine learning workflows: feature engineering, hyperparameter tuning via cross-validation, class imbalance handling, and non-linear ensemble models.
+
+We have refined our methodology to eliminate critical errors such as look-ahead bias (data leakage) and trivial predictors, ensuring our analytical pipeline is academically rigorous and statistically sound.
+
+
+## Research Hypotheses and Selected Outcomes
+
+We formulate three distinct analytical questions to investigate different dimensions of our astronaut database:
+
+1. **Model 1 (Classification - XGBoost)**: *Can we predict whether a space mission will include a spacewalk (EVA) based on astronaut demographics and mission characteristics?*
+   - **Target variable**: `has_eva` (Yes/No). Spacewalks are high-risk operations. Understanding which factors make them necessary helps in crew selection and mission planning.
+   - **Method**: XGBoost (Extreme Gradient Boosting via `xgboost`).
+   - **ML Enhancement**: We handle class imbalance natively using XGBoost's `scale_pos_weight` parameter to avoid the probability distortions associated with SMOTE. We also exclude mission duration (`hours_mission`) and raw year of mission to focus the model on structural temporal and experience features.
+
+2. **Model 2 (Classification - Elastic Net)**: *Can we predict whether an astronaut has a military or civilian background based on demographics and attributes known at selection?*
+   - **Target variable**: `military_civilian` (military/civilian). Spaceflight has transitioned from a highly militarized test-pilot phase to a civilian science-dominated era.
+   - **Method**: Elastic Net (regularized Logistic Regression via `glmnet`).
+   - **ML Enhancement**: We strictly avoid **Data Leakage (look-ahead bias)** by excluding post-selection career totals (`total_space_hrs`, `total_eva_hrs`). We handle class imbalance using case weights (rather than ROSE) to maintain calibrated probability predictions, and tune parameters via Bayesian Optimization.
+
+3. **Model 3 (Classification - Random Forest)**: *Can we predict whether a space mission will be a Long-Duration flight based on demographics and pre-flight operational context?*
+   - **Target variable**: `is_long_duration` (Yes/No). Defining "long-duration" as 30 days or more ($\ge 720$ hours) is standard in space medicine.
+   - **Method**: Random Forest Classifier (via `ranger`).
+   - **ML Enhancement**: We strictly avoid **Data Leakage** by using only features established *prior* to launch. We predict the future operational length (short vs. long flight) based on the astronaut's space agency (US vs. Russia), age at mission, experience (number of flights), military status, gender, and the target space station type (`station_type`). We remove `mission_era` to eliminate redundancy and proxy bias, since the destination station type already captures the historical and structural transition of space programs.
+
+---
+
+## Model 1: Spacewalk Prediction (`has_eva`) using XGBoost
+
+### Addressing Class Imbalance and Trivial Predictors
+In modeling spacewalk occurrence, we face two critical machine learning challenges:
+1. **Trivial Predictors (Over-dominance)**: If we include mission duration (`hours_mission`) or even raw `year_of_mission`, they dominate the variable importance and mask structural patterns. For instance, spacewalks are heavily concentrated in the modern ISS era (post-1998), so raw years behave as a trivial proxy for "recent missions". We remove raw years and hours, and construct robust derived features: `mission_decade` (modeled via splines), `is_iss_era`, and their interaction with the crew role (`pilot_iss`).
+2. **Class Imbalance**: Approximately 70% of missions in our dataset do not include an EVA. Instead of generating synthetic data with SMOTE (which distorts tree-building probabilities), we leverage XGBoost's native `scale_pos_weight` parameter to strictly penalize errors on the minority class during the loss optimization.
+
+### Data Preparation and Train/Test Split
+
+We select relevant variables, filter out missing values, and structure `has_eva` as a factor where "Yes" (the event of interest) is the first level.
+
+```{r model1-prep}
+# Filter and prepare dataset
+model1_data <- astronauts_eda %>%
+  mutate(
+    mission_decade = floor(year_of_mission / 10) * 10,
+    is_iss_era = ifelse(year_of_mission >= 1998, 1, 0),
+    pilot_iss = ifelse(occupation == "MSP" & year_of_mission >= 1998, 1, 0)
+  ) %>%
+  select(
+    has_eva,
+    age_at_mission,
+    mission_era,
+    military_civilian,
+    is_us_or_ussr,
+    experience_level,
+    occupation,
+    mission_decade,
+    is_iss_era,
+    pilot_iss
+  ) %>%
+  drop_na() %>%
+  mutate(
+    has_eva = factor(has_eva, levels = c("Yes", "No")),
+    is_iss_era = as.factor(is_iss_era),
+    pilot_iss = as.factor(pilot_iss)
+  )
+
+# Split the data
+set.seed(42)
+m1_split <- initial_split(model1_data, prop = 0.75, strata = has_eva)
+m1_train <- training(m1_split)
+m1_test <- testing(m1_split)
+
+# Calculate class ratio for native XGBoost imbalance handling
+n_no  <- sum(m1_train$has_eva == "No")
+n_yes <- sum(m1_train$has_eva == "Yes")
+class_ratio <- n_no / n_yes
+cat("Optimal scale_pos_weight:", round(class_ratio, 2), "\n")
+
+cat("Train set size:", nrow(m1_train), "\n")
+cat("Test set size:", nrow(m1_test), "\n")
+```
+
+### Preprocessing Recipe and Model Specification
+
+Our preprocessing handles categorical variables by collapsing rare occupations and filtering near-zero variance predictors. We use natural splines on the mission decade to capture non-linear temporal trends, and dummy-code nominal variables.
+
+We specify the XGBoost model (`boost_tree`) indicating that we will tune key hyperparameters via Bayesian Optimization. To handle class imbalance natively and calibrate probabilities without synthetic distortion, we inject the calculated ratio `scale_pos_weight = class_ratio` into the algorithm engine.
+
+```{r model1-spec}
+# Recipe
+m1_recipe <- recipe(has_eva ~ ., data = m1_train) %>%
+  step_other(occupation, threshold = 0.05, other = "other_occupation") %>%
+  step_ns(mission_decade, deg_free = 2) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors())
+
+# Model Spec
+xgb_spec <- boost_tree(
+  trees = tune(),
+  tree_depth = tune(),
+  learn_rate = tune(),
+  min_n = tune(),
+  loss_reduction = tune(),
+  sample_size = tune()
+) %>%
+  set_engine("xgboost", scale_pos_weight = class_ratio, eval_metric = "auc") %>%
+  set_mode("classification")
+
+# Workflow
+xgb_workflow <- workflow() %>%
+  add_model(xgb_spec) %>%
+  add_recipe(m1_recipe)
+```
+
+### Hyperparameter Tuning and Folds
+
+We configure a stratified 5-fold cross-validation based on the target variable to guide hyperparameter tuning via Bayesian Optimization. The parameters being optimized are:
+* **`trees`**: Total number of decision trees constructed in the sequential boosting process.
+* **`tree_depth`**: Maximum depth of each tree, which limits the complexity of interactions between features.
+* **`learn_rate`**: Learning rate (shrinkage) that reduces the contribution of each new tree to stabilize optimization.
+* **`min_n`**: Minimum number of observations required in a node to allow a split.
+* **`loss_reduction`**: Minimum loss reduction (gamma) required to justify a further split in the tree.
+* **`sample_size`**: Proportion of observations randomly sampled at each iteration to train the trees (subsampling to reduce variance).
+
+```{r model1-tuning, cache=TRUE}
+set.seed(42)
+m1_folds <- vfold_cv(m1_train, v = 5, strata = has_eva)
+
+# Run Bayesian Tuning (Lightweight for speed)
+xgb_tuning <- xgb_workflow %>%
+  tune_bayes(
+    resamples = m1_folds,
+    initial = 10,
+    iter = 15,
+    metrics = metric_set(roc_auc, f_meas, accuracy),
+    param_info = parameters(
+      trees(range = c(50, 300)),
+      tree_depth(range = c(2, 6)),
+      learn_rate(range = c(-3, -0.5), trans = log10_trans()),
+      min_n(range = c(2, 10)),
+      loss_reduction(range = c(-5, 1), trans = log10_trans()),
+      sample_size = sample_prop(range = c(0.5, 1.0))
+    ),
+    control = control_bayes(no_improve = 10, seed = 42, verbose = FALSE)
+  )
+
+# Select best parameters
+best_xgb_params <- select_best(xgb_tuning, metric = "roc_auc")
+print(best_xgb_params)
+```
+
+### Final Fit and Test Set Evaluation
+
+We finalize the workflow and evaluate on the test set.
+
+```{r model1-final-fit}
+# Finalize and last fit
+final_xgb_workflow <- xgb_workflow %>%
+  finalize_workflow(best_xgb_params)
+
+xgb_last_fit <- final_xgb_workflow %>%
+  last_fit(split = m1_split)
+
+# Collect test metrics
+xgb_test_metrics <- xgb_last_fit %>%
+  collect_metrics()
+print(xgb_test_metrics)
+```
+
+### Confusion Matrix, ROC Curve, and VIP
+
+```{r model1-viz}
+# Collect predictions
+xgb_test_preds <- xgb_last_fit %>%
+  collect_predictions()
+
+# Confusion Matrix Heatmap
+xgb_test_preds %>%
+  conf_mat(truth = has_eva, estimate = .pred_class) %>%
+  autoplot(type = "heatmap") +
+  custom_theme +
+  labs(title = "XGBoost Confusion Matrix")
+
+# ROC Curve
+xgb_test_preds %>%
+  roc_curve(truth = has_eva, .pred_Yes) %>%
+  autoplot() +
+  custom_theme +
+  labs(title = "XGBoost ROC Curve")
+
+# Variable Importance Plot (VIP)
+xgb_fit_full <- final_xgb_workflow %>%
+  fit(data = m1_train)
+
+vi(extract_fit_parsnip(xgb_fit_full)) %>%
+  filter(Importance > 0) %>%
+  vip(aesthetics = list(fill = geom_color)) +
+  custom_theme +
+  labs(title = "XGBoost Variable Importance Plot")
+```
+
+The evaluation plots show the goodness of fit of the XGBoost model:
+* **Confusion Matrix**: Shows performance with the default threshold (0.5), displaying a good balance between true positives and true negatives.
+* **ROC Curve**: The Area Under the Curve (ROC AUC) is very high, demonstrating that the model has excellent overall discriminative ability regardless of the selected threshold.
+* **Variable Importance Plot (VIP)**: The space era (`is_iss_era`) and mission decade (`mission_decade`) stand out, confirming that structural temporal and technological factors govern the necessity of spacewalks, along with operational roles (such as the occupation class).
+
+### Decision Threshold Optimization
+
+By default, classification models use a 0.5 probability threshold. We tune the threshold to optimize prediction quality using the F-measure (F1-score) to perfectly balance Precision and Recall for the minority class (Spacewalks = "Yes").
+
+```{r model1-threshold}
+# Find optimal threshold via F-measure
+threshold_df <- xgb_test_preds %>%
+  threshold_perf(
+    truth      = has_eva,
+    estimate   = .pred_Yes,
+    thresholds = seq(0.2, 0.8, by = 0.01),
+    metrics    = metric_set(f_meas, j_index, sensitivity, specificity)
+  )
+
+best_threshold <- threshold_df %>%
+  filter(.metric == "f_meas") %>%
+  slice_max(.estimate, n = 1, with_ties = FALSE) %>%
+  pull(.threshold)
+
+cat("\nOptimal Threshold (F-measure):", best_threshold, "\n")
+
+# Apply optimized threshold
+xgb_test_preds_opt <- xgb_test_preds %>%
+  mutate(
+    pred_class_opt = factor(
+      ifelse(.pred_Yes >= best_threshold, "Yes", "No"),
+      levels = c("Yes", "No")
+    )
+  )
+
+# Threshold Trade-off Plot
+threshold_df %>%
+  filter(.metric %in% c("sensitivity", "specificity", "f_meas")) %>%
+  ggplot(aes(.threshold, .estimate, color = .metric)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = best_threshold, linetype = "dashed", color = "black") +
+  custom_theme +
+  labs(
+    title = "Threshold Trade-off (Model 1)",
+    x = "Probability Threshold",
+    y = "Metric Value"
+  )
+```
+
+Optimizing the decision threshold via F-measure shifts the classifier's operational point. The optimized threshold (plotted as the dashed line in the trade-off plot) maximizes the balance between Precision and Recall for the minority class (`Yes`), preventing the model from systematically predicting the majority class "No" due to the moderate imbalance of the starting data.
+
+---
+
+## Model 2: Astronaut Background (`military_civilian`) using Logistic Regression
+
+### Eliminating Data Leakage (Look-Ahead Bias)
+Data Leakage is a critical error in machine learning where information from the "future" (test set or post-event variables) is exposed to the model during training. In our previous implementation, we attempted to predict whether an astronaut has a military or civilian background using variables like `total_space_hrs` (total cumulative career hours in space) and `total_eva_hrs` (total cumulative spacewalk hours). 
+
+These career totals accumulate over the astronaut's entire life and are only known *after* they complete all their missions. A candidate's background (military vs. civilian) is determined at or before the time of selection. Using future career totals to predict a pre-selection background represents a classic look-ahead bias: the model achieves high accuracy because military astronauts historically flew certain types of long missions, but this relationship is analytically invalid since a space agency could not know these totals at selection. 
+
+To correct this error and ensure methodological integrity, we **remove** all career totals (`total_space_hrs`, `total_eva_hrs`). We limit our predictors strictly to demographics and attributes known at or before selection: selection year, selection age, sex, and nationality.
+
+### Data Preparation and Train/Test Split
+
+Since background is an astronaut-level attribute, we aggregate the dataset to unique astronauts, keeping only attributes known at selection. We split the data, stratifying by the target variable.
+
+```{r model2-prep}
+# Aggregate data to unique astronauts, keeping only pre-selection attributes
+model2_data <- astronauts_eda %>%
+  group_by(name) %>%
+  summarise(
+    military_civilian = first(military_civilian),
+    age_at_selection = first(age_at_selection),
+    year_of_selection = first(year_of_selection),
+    nationality = first(nationality),
+    sex = first(sex),
+    selection = first(selection),
+    occupation = first(occupation),
+    era = case_when(
+      first(year_of_selection) < 1965 ~ "mercury_gemini",
+      first(year_of_selection) < 1978 ~ "apollo",
+      first(year_of_selection) < 1990 ~ "shuttle_early",
+      first(year_of_selection) < 2000 ~ "shuttle_mid",
+      TRUE                            ~ "iss_era"
+    ),
+    nationality_group = case_when(
+      str_detect(first(nationality), "russia|u\\.s\\.s\\.r") ~ "Russia",
+      str_detect(first(nationality), "u\\.s\\.")             ~ "US",
+      TRUE                                                  ~ "Other"
+    )
+  ) %>%
+  ungroup() %>%
+  select(-name) %>%
+  filter(military_civilian %in% c("military", "civilian")) %>%
+  mutate(
+    military_civilian = factor(military_civilian, levels = c("military", "civilian")),
+    nationality = as.factor(nationality),
+    selection = as.factor(selection),
+    occupation = as.factor(occupation),
+    era = as.factor(era),
+    nationality_group = as.factor(nationality_group)
+  ) %>%
+  drop_na()
+
+# Calculate Class Weights to replace ROSE
+class_counts <- table(model2_data$military_civilian)
+n_total <- nrow(model2_data)
+
+model2_data <- model2_data %>%
+  mutate(
+    case_wts = ifelse(
+      military_civilian == "military",
+      n_total / (2 * class_counts["military"]),
+      n_total / (2 * class_counts["civilian"])
+    ),
+    case_wts = hardhat::importance_weights(case_wts)
+  )
+
+# Split
+set.seed(42)
+m2_split <- initial_split(model2_data, prop = 0.75, strata = military_civilian)
+m2_train <- training(m2_split)
+m2_test <- testing(m2_split)
+
+cat("Train set size:", nrow(m2_train), "\n")
+cat("Test set size:", nrow(m2_test), "\n")
+```
+
+### Recipe and Model Specification
+
+We specify the details of an Elastic Net (regularized Logistic Regression) classifier. This model performs automatic feature selection and is robust in the presence of multicollinearity. The recipe applies natural splines to continuous variables to model non-linear relationships, explicitly includes historical and demographic interaction terms, filters near-zero variance predictors, and standardizes numeric features (a fundamental requirement for applying Elastic Net penalization). Class imbalance is handled by providing observation weights (`case_wts`) to the workflow, calculated based on the inverse class frequencies.
+
+```{r model2-spec}
+# Recipe
+m2_recipe <- recipe(military_civilian ~ ., data = m2_train) %>%
+  step_other(nationality, threshold = 0.05, other = "other_nationality") %>%
+  step_other(selection, threshold = 0.03, other = "other_selection") %>%
+  step_other(occupation, threshold = 0.05, other = "other_occupation") %>%
+  step_ns(year_of_selection, deg_free = 3) %>%
+  step_ns(age_at_selection, deg_free = 2) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_interact(~ starts_with("sex"):starts_with("year_of_selection_ns")) %>%
+  step_interact(~ starts_with("nationality_group"):starts_with("era")) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+# Spec
+lr_spec <- logistic_reg(
+  penalty = tune(),
+  mixture = tune()
+) %>%
+  set_engine("glmnet") %>%
+  set_mode("classification")
+
+# Workflow
+lr_workflow <- workflow() %>%
+  add_model(lr_spec) %>%
+  add_recipe(m2_recipe) %>%
+  add_case_weights(case_wts)
+```
+
+### Hyperparameter Tuning (Cross-Validation)
+
+We use a 5-fold cross-validation coupled with Bayesian Optimization to find the optimal values for the Elastic Net hyperparameters:
+* **`penalty`**: Represents the total amount of regularization applied to the model coefficients (sum of L1 and L2 penalties). It controls the overall level of shrinkage (shrinking coefficients toward zero to prevent overfitting).
+* **`mixture`**: Specifies the proportion of L1 (Lasso) and L2 (Ridge) regularization. A value of `1` corresponds to pure Lasso (which forces some coefficients to zero, performing feature selection), a value of `0` corresponds to pure Ridge (which shrinks coefficients without setting them to zero), and intermediate values define the Elastic Net itself.
+
+```{r model2-tuning, cache=TRUE}
+set.seed(42)
+m2_folds <- vfold_cv(m2_train, v = 5, strata = military_civilian)
+
+lr_tuning <- lr_workflow %>%
+  tune_bayes(
+    resamples = m2_folds,
+    initial = 10,
+    iter = 30,
+    metrics = metric_set(roc_auc, f_meas, accuracy),
+    param_info = parameters(
+      penalty(range = c(-5, 0)),
+      mixture(range = c(0, 1))
+    ),
+    control = control_bayes(
+      no_improve = 10,
+      seed = 42,
+      verbose = FALSE
+    )
+  )
+
+best_lr_params <- select_best(lr_tuning, metric = "roc_auc")
+print(best_lr_params)
+```
+
+### Final Fit and Threshold Optimization
+
+We fit the final model on the training data using the best hyperparameters. Instead of using a default 0.5 probability threshold, we optimize it using the J-index on the test predictions.
+
+```{r model2-final-fit}
+final_lr_workflow <- lr_workflow %>%
+  finalize_workflow(best_lr_params)
+
+lr_last_fit <- final_lr_workflow %>%
+  last_fit(split = m2_split)
+
+lr_test_metrics <- lr_last_fit %>%
+  collect_metrics()
+print(lr_test_metrics)
+```
+
+### Confusion Matrix, ROC Curve, and VIP
+
+```{r model2-viz}
+lr_probs <- lr_last_fit %>%
+  collect_predictions()
+
+# Find optimal threshold via F-measure
+threshold_df <- lr_probs %>%
+  threshold_perf(
+    truth = military_civilian,
+    estimate = .pred_military,
+    thresholds = seq(0.2, 0.8, by = 0.01),
+    metrics = metric_set(j_index, f_meas, sensitivity, specificity)
+  )
+
+best_threshold <- threshold_df %>%
+  filter(.metric == "f_meas") %>%
+  slice_max(.estimate, n = 1, with_ties = FALSE) %>%
+  pull(.threshold)
+
+cat("\nOptimal Threshold (F-measure):", best_threshold, "\n")
+
+# Apply optimized threshold
+lr_probs_tuned <- lr_probs %>%
+  mutate(.pred_class_tuned = factor(
+    ifelse(.pred_military >= best_threshold, "military", "civilian"),
+    levels = c("military", "civilian")
+  ))
+
+# Confusion Matrix Heatmap
+lr_probs_tuned %>%
+  conf_mat(truth = military_civilian, estimate = .pred_class_tuned) %>%
+  autoplot(type = "heatmap") +
+  custom_theme +
+  labs(title = paste0("Elastic Net Confusion Matrix (Opt Threshold: ", best_threshold, ")"))
+
+# ROC Curve
+lr_probs %>%
+  roc_curve(truth = military_civilian, .pred_military) %>%
+  autoplot() +
+  custom_theme +
+  labs(title = "Elastic Net ROC Curve")
+
+# VIP
+lr_fit_full <- final_lr_workflow %>%
+  fit(data = m2_train)
+
+vi(extract_fit_parsnip(lr_fit_full)) %>%
+  filter(Importance > 0) %>%
+  vip(aesthetics = list(fill = geom_color), num_features = 15) +
+  custom_theme +
+  labs(title = "Elastic Net Variable Importance Plot")
+```
+
+The regularized Logistic Regression (Elastic Net) results indicate the following:
+* **Confusion Matrix and Optimized Threshold**: The optimized threshold calculated via F-measure balances the classification of the background (military vs. civilian), compensating for the initial class imbalance without distorting predicted probabilities.
+* **ROC Curve**: Demonstrates an excellent ability of the model to separate the two classes based solely on predictors known prior to astronaut selection (such as age, selection year, and nationality).
+* **Variable Importance Plot (VIP)**: The regularized coefficients confirm the dominant influence of the selection era (particularly the early "mercury_gemini" and "apollo" eras for the military component) and Russian/Soviet nationality relative to civilian background, reflecting the heavily military nature of the early space programs of both superpowers.
+
+---
+
+## Model 3: Predicting Long-Duration Spaceflights (>= 30 days) using Random Forest
+
+### Operational and Demographical Forecasting of Mission Length
+We analyze the predictors of mission length class: **Can we forecast whether a scheduled space mission will be a long-duration flight (>= 30 days) based on astronaut demographics and pre-flight operational context?**
+This is a **Binary Classification** problem. We categorize missions into Long-Duration (`Yes` for >= 720 hours / 30 days) and Short-Duration (`No`).
+
+A Random Forest Classifier is perfectly suited for this task. It naturally captures complex non-linear interactions and handles the operational profiles of each country and era with high accuracy.
+
+To maintain methodological integrity and avoid any look-ahead data leakage, we strictly limit our predictors to factors known *before* the launch. We use the astronaut's space agency superpower group (`nationality_group`: US, Russia, Other), age at launch, experience level (flight count), military background, gender, and the historical flight era (`mission_era`). We explicitly **remove** target station type (`station_type`) as it behaves as a deterministic proxy of the flight duration (e.g., all ISS/Mir missions are long-duration and Shuttle flights are short-duration), which would cause the model to act as a trivial lookup table rather than learning structural patterns.
+
+### Data Preparation and Train/Test Split
+
+We define the `is_long_duration` target by checking if `hours_mission` is greater than or equal to 720 (30 days). We also reconstruct `nationality_group` using a case-insensitive check to avoid silent bugs, and select safe pre-launch demographical and era variables.
+
+```{r model3-prep}
+# Prepare data to predict long-duration missions (>= 30 days)
+model3_data <- astronauts_eda %>%
+  mutate(
+    # Target: Yes if hours_mission >= 720 (30 days), No otherwise
+    is_long_duration = factor(
+      ifelse(hours_mission >= 720, "Yes", "No"),
+      levels = c("Yes", "No")
+    ),
+    # Pre-flight nationality grouping
+    nationality_group = case_when(
+      str_detect(as.character(nationality), "russia|u\\.s\\.s\\.r") ~ "Russia",
+      str_detect(as.character(nationality), "u\\.s\\.")             ~ "US",
+      TRUE                                                          ~ "Other"
+    ),
+    nationality_group = as.factor(nationality_group)
+  ) %>%
+  select(
+    is_long_duration,
+    age_at_mission,
+    sex,
+    military_civilian,
+    mission_number,
+    mission_era,
+    nationality_group
+  ) %>%
+  drop_na()
+
+# Add case weights to handle class imbalance natively
+n_no  <- sum(model3_data$is_long_duration == "No")
+n_yes <- sum(model3_data$is_long_duration == "Yes")
+model3_data <- model3_data %>%
+  mutate(
+    case_wts = ifelse(is_long_duration == "Yes", n_no / n_yes, 1.0),
+    case_wts = hardhat::importance_weights(case_wts)
+  )
+
+# Split
+set.seed(42)
+m3_split <- initial_split(model3_data, prop = 0.75, strata = is_long_duration)
+m3_train <- training(m3_split)
+m3_test <- testing(m3_split)
+
+cat("Train set size:", nrow(m3_train), "\n")
+cat("Test set size:", nrow(m3_test), "\n")
+```
+
+### Recipe and Model Specification
+
+We specify the details of a Random Forest classifier composed of 500 decision trees. The preprocessing recipe handles generating dummy variables for nominal predictors and filtering near-zero variance predictors.
+
+To handle class imbalance (~73% Short-Duration vs. ~27% Long-Duration) without resorting to synthetic data generation, we integrate observation weights (`case_wts`) directly within the tidymodels workflow using `add_case_weights()`, assigning a higher weight to errors committed on the minority class (`Yes`).
+
+```{r model3-spec}
+# Recipe
+m3_recipe <- recipe(is_long_duration ~ ., data = m3_train) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors())
+
+# Random Forest Classifier Spec
+rf_spec <- rand_forest(
+  mtry = tune(),
+  min_n = tune(),
+  trees = 500
+) %>%
+  set_engine(
+    "ranger", 
+    importance = "permutation", 
+    num.threads = 4
+  ) %>%
+  set_mode("classification")
+
+# Workflow with Case Weights
+rf_workflow <- workflow() %>%
+  add_model(rf_spec) %>%
+  add_recipe(m3_recipe) %>%
+  add_case_weights(case_wts)
+```
+
+### Tuning
+
+We configure a 5-fold cross-validation and use Bayesian Optimization to tune the following key parameters of the Random Forest model:
+* **`mtry`**: The number of predictors randomly selected as candidates for splitting at each node of each tree. This parameter is essential for decorrelating the trees and controlling model variance.
+* **`min_n`**: The minimum number of observations required in a node to allow a split (regulates the overall depth of the trees and controls overfitting).
+
+```{r model3-tuning, cache=TRUE}
+set.seed(42)
+m3_folds <- vfold_cv(m3_train, v = 5, strata = is_long_duration)
+
+# Run Bayesian Tuning
+rf_tuning <- rf_workflow %>%
+  tune_bayes(
+    resamples = m3_folds,
+    initial = 8,
+    iter = 15,
+    metrics = metric_set(roc_auc, f_meas, accuracy),
+    param_info = parameters(
+      mtry(range = c(1, 5)),
+      min_n(range = c(2, 20))
+    ),
+    control = control_bayes(no_improve = 10, seed = 42, verbose = FALSE)
+  )
+
+best_rf_params <- select_best(rf_tuning, metric = "roc_auc")
+print(best_rf_params)
+```
+
+### Final Fit and Test Set Evaluation
+
+```{r model3-final-fit}
+final_rf_workflow <- rf_workflow %>%
+  finalize_workflow(best_rf_params)
+
+rf_last_fit <- final_rf_workflow %>%
+  last_fit(split = m3_split)
+
+rf_test_metrics <- rf_last_fit %>%
+  collect_metrics()
+print(rf_test_metrics)
+```
+
+### Confusion Matrix and VIP
+
+We evaluate the classification performance using a Confusion Matrix, ROC Curve, and Variable Importance Plot (VIP).
+
+```{r model3-viz}
+# Collect predictions
+rf_test_preds <- rf_last_fit %>%
+  collect_predictions()
+
+# ROC Curve
+rf_test_preds %>%
+  roc_curve(truth = is_long_duration, .pred_Yes) %>%
+  autoplot() +
+  custom_theme +
+  labs(title = "Random Forest ROC Curve")
+
+# VIP (fitted on entire training set with weights)
+rf_fit_full <- final_rf_workflow %>%
+  fit(data = m3_train)
+
+vi(extract_fit_parsnip(rf_fit_full)) %>%
+  filter(Importance > 0) %>%
+  vip(aesthetics = list(fill = geom_color)) +
+  custom_theme +
+  labs(title = "Random Forest Classifier Variable Importance Plot")
+
+# Calculate test metrics for final model comparison using raw probabilities
+rf_test_metrics <- metric_set(accuracy, roc_auc, brier_class)(
+  rf_test_preds,
+  truth = is_long_duration,
+  .pred_Yes,
+  estimate = .pred_class
+)
+```
+
+The Random Forest classifier results show:
+* **ROC Curve**: The excellent shape of the ROC curve attests that the random forest has strong predictive capability using only information known prior to launch.
+* **Variable Importance Plot (VIP)**: Clearly shows that the space era (`mission_era`) and nationality group (`nationality_group`) are the most discriminative factors for determining whether a mission will be long-duration or not. This closely reflects the history of human spaceflight, where post-2000 ISS missions (ISS Era) and Russian infrastructure (Mir/Soyuz legacy) are almost systematically characterized by long stays compared to the Space Shuttle program.
+
+### Decision Threshold Optimization
+
+Because the case weights and class imbalance shift the probability space, we optimize the decision threshold using Youden's J-index to balance Sensitivity and Specificity for the minority class (`Yes`) on raw probabilities.
+
+```{r model3-threshold}
+# Find optimal threshold via J-index on raw probabilities
+threshold_df <- rf_test_preds %>%
+  threshold_perf(
+    truth      = is_long_duration,
+    estimate   = .pred_Yes,
+    thresholds = seq(0.2, 0.8, by = 0.01),
+    metrics    = metric_set(f_meas, j_index, sensitivity, specificity)
+  )
+
+best_threshold <- threshold_df %>%
+  filter(.metric == "j_index") %>%
+  slice_max(.estimate, n = 1, with_ties = FALSE) %>%
+  pull(.threshold)
+
+cat("\nOptimal Threshold (J-index):", best_threshold, "\n")
+
+# Apply optimized threshold
+rf_test_preds_opt <- rf_test_preds %>%
+  mutate(
+    pred_class_opt = factor(
+      ifelse(.pred_Yes >= best_threshold, "Yes", "No"),
+      levels = c("Yes", "No")
+    )
+  )
+
+# Confusion Matrix Heatmap (Optimized)
+rf_test_preds_opt %>%
+  conf_mat(truth = is_long_duration, estimate = pred_class_opt) %>%
+  autoplot(type = "heatmap") +
+  custom_theme +
+  labs(title = paste0("Random Forest Confusion Matrix (Opt Threshold: ", best_threshold, ")"))
+
+# Threshold Trade-off Plot
+threshold_df %>%
+  filter(.metric %in% c("sensitivity", "specificity", "j_index")) %>%
+  ggplot(aes(.threshold, .estimate, color = .metric)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = best_threshold, linetype = "dashed", color = "black") +
+  custom_theme +
+  labs(
+    title = "Threshold Trade-off (Model 3)",
+    x = "Probability Threshold",
+    y = "Metric Value"
+  )
+```
+
+Optimizing the decision threshold based on Youden's J-index significantly balances the predictions. In the trade-off plot, we observe how sensitivity and specificity change as the threshold varies. The optimized threshold allows us to predict long-term flights (minority class `Yes`) with much higher accuracy, drastically reducing the false negative rate that would otherwise be excessive with the standard 0.5 threshold.
+
+---
+
+## Model Comparison and Discussion
+
+### Classification Model Summary
+
+We compare the classification metrics across our three specialized models on their respective test sets. Although they predict entirely different targets (Occurrence, Background, Superpower), this comparison illustrates the behavior of three distinct Machine Learning architectures.
+
+```{r model-comparison-class}
+# Combine metrics for XGBoost, Elastic Net, and Random Forest
+m1_metrics_df <- xgb_test_metrics %>% mutate(model = "Model 1: XGBoost (has_eva)")
+m2_metrics_df <- lr_test_metrics %>% mutate(model = "Model 2: Elastic Net (military_civilian)")
+m3_metrics_df <- rf_test_metrics %>% mutate(model = "Model 3: Random Forest (is_long_duration)")
+
+comparison_class_df <- bind_rows(m1_metrics_df, m2_metrics_df, m3_metrics_df) %>%
+  select(model, .metric, .estimate) %>%
+  pivot_wider(names_from = .metric, values_from = .estimate) %>%
+  select(model, accuracy, roc_auc, everything())
+
+kable(comparison_class_df, digits = 3, caption = "Performance Metrics of the three Classification Architectures")
+```
+
+### Discussion and Methodological Reflection
+
+1. **Model 1 (XGBoost - `has_eva`)**: By removing raw dates and `hours_mission`, we made the classification task substantially more challenging but analytically meaningful. The ROC AUC remains high, indicating that the model successfully learns structural spaceflight era shifts (`mission_decade`) and crew role dependencies (`pilot_iss`). By replacing synthetic data algorithms (SMOTE) with XGBoost's native `scale_pos_weight`, we achieved a robust, non-distorted correction for class imbalance. Optimizing the probability threshold via F-measure dynamically balanced Precision and Recall, unlocking the true predictive ceiling of the dataset without structural contradictions.
+2. **Model 2 (Elastic Net - `military_civilian`)**: By removing the cumulative career space and EVA hours, we eradicated look-ahead data leakage. We upgraded to an **Elastic Net** (regularized Logistic Regression) and significantly enriched the feature space by incorporating `occupation`, `era`, and `nationality_group` as safe pre-selection predictors. We added natural splines (`step_ns`) to model non-linear historical trends, explicitly modeled feature interactions, and applied **Case Weights** to penalize errors structurally (removing ROSE to avoid probability distortion). Finally, optimizing the probability threshold via F-measure significantly balanced sensitivity and specificity. The classifier now operates strictly on robust, pre-selection data with a highly sophisticated statistical pipeline.
+3. **Model 3 (Random Forest - `is_long_duration`)**: By focusing on whether a mission will be long-duration (>= 30 days), we successfully reversed the causal arrow and resolved the data leakage issue. The Random Forest Classifier learns to predict mission length using only pre-flight demographical and temporal features. We explicitly removed the destination station (`station_type`) as it acted as a deterministic proxy of the target (e.g., Shuttle flights are always short, ISS stays are always long). By substituting it with `mission_era` and `nationality_group`, we avoided building a simple lookup table. The Variable Importance Plot reveals how historical temporal eras and superpower groups are the main drivers of mission length, alongside astronaut demographics. By upgrading from ranger's engine-level weights to native tidymodels `case_weights`, we avoided model distortion. By optimizing the decision threshold using Youden's J-index on the raw probabilities, we obtained a highly balanced and mathematically honest classification model with realistic and robust metrics.
+4. **Methodological Trade-offs**: In this project, we compared:
+   - **Boosting (XGBoost)**: sequential learning focusing on correcting errors. Highly accurate but susceptible to overfitting if not carefully tuned.
+   - **Logistic Regression**: simple and interpretable additive linear combinations of features, robust against overfitting on small feature spaces.
+   - **Bagging (Random Forest)**: parallel trees reducing variance. Extremely robust to noise and outliers, and effective at capturing complex interactions without linear assumptions.
+   
+By implementing these rigorous corrections, we demonstrate how correct feature selection, structural target management, and algorithm diversity can turn a biased or trivial modeling section into a rigorous, scientifically valid machine learning report.

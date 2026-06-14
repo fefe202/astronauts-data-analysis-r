@@ -1,0 +1,10 @@
+# Knitr cache directory
+astronaut_database_cache/
+
+# R history and workspace files
+.Rhistory
+.RData
+.Ruserdata
+
+# RStudio files
+.Rproj.user/

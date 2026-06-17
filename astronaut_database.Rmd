@@ -1291,3 +1291,26 @@ kable(comparison_class_df, digits = 3, caption = "Performance Metrics of the thr
    - **Bagging (Random Forest)**: parallel trees reducing variance. Extremely robust to noise and outliers, and effective at capturing complex interactions without linear assumptions.
    
 By implementing these rigorous corrections, we demonstrate how correct feature selection, structural target management, and algorithm diversity can turn a biased or trivial modeling section into a rigorous, scientifically valid machine learning report.
+
+---
+
+## 4. Summary and Reflection
+
+### Concise Project Summary
+In this project, we developed a complete data science workflow using the R programming language. We loaded and cleaned the historical astronauts dataset, resolving text inconsistencies and missing values. We then engineered 12 new variables and produced 12 visualizations detailing trends in spaceflight demographics, mission durations, and extravehicular activities (EVAs). Finally, we utilized the `tidymodels` framework to train, tune, and compare three classification models: an XGBoost classifier for predicting spacewalk necessity, an Elastic Net regularized logistic regression for classifying astronaut background, and a Random Forest classifier for forecasting long-duration missions.
+
+### Most Important Findings
+* **Demographic and Career Shifts**: Space exploration transitioned from a highly militarized field of young test pilots during the Space Race to an internationally collaborative, science-driven scientific phase dominated by civilian specialists of older selection ages in the ISS Era.
+* **EVA Activity Trends**: Spacewalk (EVA) hours grew exponentially starting in the 1990s, reflecting the infrastructural construction demands of the International Space Station (ISS) and Mir.
+* **Predictive Performance**: Demographics and historical eras carry significant predictive signals. Model 3 (Random Forest) achieved the highest ROC AUC in forecasting mission duration class based entirely on pre-flight indicators, highlighting the strong historical determinism of nationality and mission eras in spaceflight lengths.
+
+### Difficulties and Limitations
+* **Class Imbalance**: Highly skewed targets (e.g., a low percentage of military selection in recent years, or short vs long duration flights) resulted in models that predicted the majority class under default probability thresholds. We solved this by using native engine weights (`scale_pos_weight`) and workflow `case_weights` paired with decision threshold optimization.
+* **Subtle Data Leakage**: Many variables in the raw dataset compile career-level statistics. Predicting astronaut properties (like pre-selection military background) using cumulative career flight hours created look-ahead bias. Restricting predictor variables strictly to the timeline prior to the target event resolved this leakage but significantly reduced raw metric values, leading to a much more scientifically honest and generalizable report.
+
+### Reflection
+* **What was the most difficult part?** Detecting and removing data leakage and proxy variables without sacrificing all predictive capability. For example, realizing that `station_type` acted as a deterministic lookup table for mission duration and learning how to structure alternative historical and nationality predictors.
+* **What was the most interesting part?** The Exploratory Data Analysis, especially seeing how clear historical trends (like space eras and agency programs) reflect geopolitical history, and how threshold optimization dynamically adjusts the model sensitivity/specificity trade-off.
+* **What would we do differently?** Design a rigorous feature timeline check from the very beginning. We would document the exact point in time each feature becomes known to systematically block any future information from entering the models.
+* **What could be improved with more resources?** With more time, we would implement survival analysis (time-to-event) models to analyze the duration of active service of astronauts, incorporate text mining on mission logs to extract complex role summaries, and implement ensemble models (e.g., stacks of boosting and random forests) to further push the prediction ceiling.
+

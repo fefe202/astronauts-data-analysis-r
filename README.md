@@ -79,7 +79,7 @@ We developed three classification models designed to prevent **Data Leakage** (l
 - **Anti-Bias Measure**: Removed future cumulative space/EVA hours to prevent look-ahead bias (data leakage).
 - **Imbalance Correction**: Applied case weights (`case_wts`) calculated via inverse class frequencies directly to the workflow.
 - **Tuning**: Bayesian Optimization on `penalty` (regularization strength) and `mixture` (L1/L2 ratio).
-- **Variable Importance**: Selection era (early Space Race vs ISS) and Soviet/Russian nationalities are highly predictive of a military background.
+- **Variable Importance**: The astronaut's nationality group (specifically US and Russia groups) and designated occupations (such as mission specialists and flight engineers) are the most dominant predictors, followed by country-specific selection era interactions.
 
   ![Elastic Net Confusion Matrix](images/model2-viz-1.png)
 

@@ -497,7 +497,7 @@ astronauts_eda %>%
   slice_head(n = 8) %>%
   ggplot(aes(x = reorder(occupation, n), y = n, fill = occupation)) +
   geom_col(show.legend = FALSE, alpha = 0.9) +
-  scale_fill_viridis_d(option = "rocket") +
+  scale_fill_viridis_d(option = "rocket", begin = 0.15, end = 0.85) +
   coord_flip() +
   labs(
     title = "Top 8 Astronaut Occupations",
@@ -1026,7 +1026,7 @@ vi(extract_fit_parsnip(lr_fit_full)) %>%
 The regularized Logistic Regression (Elastic Net) results indicate the following:
 * **Confusion Matrix and Optimized Threshold**: The optimized threshold calculated via F-measure balances the classification of the background (military vs. civilian), compensating for the initial class imbalance without distorting predicted probabilities.
 * **ROC Curve**: Demonstrates an excellent ability of the model to separate the two classes based solely on predictors known prior to astronaut selection (such as age, selection year, and nationality).
-* **Variable Importance Plot (VIP)**: The regularized coefficients confirm the dominant influence of the selection era (particularly the early "mercury_gemini" and "apollo" eras for the military component) and Russian/Soviet nationality relative to civilian background, reflecting the heavily military nature of the early space programs of both superpowers.
+* **Variable Importance Plot (VIP)**: The regularized coefficients show that the astronaut's nationality group (specifically US and Russian groups) and designated occupations (such as mission specialists and flight engineers) are the most important predictors. Additionally, interaction terms between the US group and selection eras (such as early and mid shuttle eras) play a significant role, capturing how military representation changed over time in a country-specific manner.
 
 ---
 
@@ -1277,7 +1277,11 @@ comparison_class_df <- bind_rows(m1_metrics_df, m2_metrics_df, m3_metrics_df) %>
   pivot_wider(names_from = .metric, values_from = .estimate) %>%
   select(model, accuracy, roc_auc, everything())
 
-kable(comparison_class_df, digits = 3, caption = "Performance Metrics of the three Classification Architectures")
+if (knitr::is_html_output() && !interactive()) {
+  kable(comparison_class_df, digits = 3, caption = "Performance Metrics of the three Classification Architectures")
+} else {
+  comparison_class_df
+}
 ```
 
 ### Discussion and Methodological Reflection
@@ -1288,7 +1292,7 @@ kable(comparison_class_df, digits = 3, caption = "Performance Metrics of the thr
 4. **Methodological Trade-offs**: In this project, we compared:
    - **Boosting (XGBoost)**: sequential learning focusing on correcting errors. Highly accurate but susceptible to overfitting if not carefully tuned.
    - **Logistic Regression**: simple and interpretable additive linear combinations of features, robust against overfitting on small feature spaces.
-   - **Bagging (Random Forest)**: parallel trees reducing variance. Extremely robust to noise and outliers, and effective at capturing complex interactions without linear assumptions.
+   - **Random Forest**: parallel trees reducing variance. Extremely robust to noise and outliers, and effective at capturing complex interactions without linear assumptions.
    
 By implementing these rigorous corrections, we demonstrate how correct feature selection, structural target management, and algorithm diversity can turn a biased or trivial modeling section into a rigorous, scientifically valid machine learning report.
 
